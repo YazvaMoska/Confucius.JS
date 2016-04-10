@@ -1,0 +1,20 @@
+{
+  "logOnOptions": {
+    "accountName": "login",
+    "password": "password",
+    "sharedSecret": "sharedSecret",
+    "identitySecret": "identitySecret",
+    "secret1": "secret1",
+    "revocationCode": "revocationCode"
+  },
+  "admins": [
+    "admin #1 steamID64",
+    "admin #2 steamID64"
+  ],
+  "mongodb": {
+    "url": "mongodb://localhost:27017/dota2bets"
+  },
+  "gameDuration": 180,
+  "rouletteDuration": 10,
+  "nextGameTimer": 15
+}
