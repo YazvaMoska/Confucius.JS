@@ -8,13 +8,17 @@
     "revocationCode": "revocationCode"
   },
   "admins": [
-    "admin #1 steamID64",
-    "admin #2 steamID64"
+    "admin SteamID64"
   ],
   "mongodb": {
-    "url": "mongodb://localhost:27017/dota2bets"
+    "url": "mongodb://localhost:27017/database-name"
   },
   "gameDuration": 180,
   "rouletteDuration": 10,
-  "nextGameTimer": 15
+  "nextGameTimer": 15,
+  "appID": 570,
+  "marketLotsRequired": 8,
+  "priceUpdateInterval": 3600,
+  "lastPriceUpdate": 1460378654530,
+  "bptfAPIKey": "backpack.tf API key"
 }
