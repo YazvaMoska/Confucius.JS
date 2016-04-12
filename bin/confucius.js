@@ -41,7 +41,7 @@ var logger = createLogger();
 var config = JSON.parse(fs.readFileSync("./config.json", "utf-8"));
 
 /**
- * Пользователи, которыс будут отправляться уведомления в Steam
+ * Пользователи, которым будут отправляться уведомления в Steam
  * @type {Array}
  */
 var notificationUsers = [];
@@ -92,9 +92,14 @@ function main() {
     connectToDB(function (database) {
         db = database;
         initInfo(function () {
-            initGame(function () {
-                auth();
+            initQueue(function () {
+                updateQueue(function () {
+                    initGame(function () {
+                        auth();
+                    });
+                });
             });
+
         });
     });
 }
@@ -118,9 +123,32 @@ function initInfo(callback) {
             });
         }
     });
-
 }
 
+/**
+ * Загружаем очередь обменоы из базы данных
+ * @param callback функция обратного вызова
+ */
+function initQueue(callback) {
+    db.collection("queue").find().toArray(function (err, items) {
+        if (err) {
+            logger.error(err.stack || err);
+            terminate();
+        } else {
+            async.forEachOfSeries(items, function (data, index, cb) {
+                queuedTrades[data.offerID] = data.items;
+                cb();
+            }, function () {
+                callback();
+            });
+        }
+    });
+}
+
+/**
+ * Загружаем информацию об игре
+ * @param callback функция обратного вызова
+ */
 function initGame(callback) {
     db.collection("games").find({id: globalInfo["current_game"]}).toArray(function (err, items) {
         if (err) {
@@ -241,6 +269,95 @@ steamClient.on('webSession', function (sessionID, cookies) {
 });
 
 /**
+ * Добавляет обмен в очередь
+ * @param offerID идентификатор обмена
+ * @param items массив с предметами
+ * @param callback функция обратного вызова
+ */
+function sendTradeToQueue(offerID, items, callback) {
+    var itemIDs = [];
+    async.forEachOfSeries(items, function (item, key, cb) {
+        itemIDs.push(item.id);
+        cb();
+    }, function () {
+        db.collection("queue").insertOne({offerID: offerID, items: itemIDs}, {w: 1}, function (err, result) {
+            if (err) {
+                logger.error("Не удалось добавить обмен в очередь");
+                logger.error(err.stack || err);
+                logger.error("Следующая попытка через 1.5с");
+                setTimeout(function () {
+                    sendTradeToQueue(offerID, items, callback);
+                }, 1500);
+            } else {
+                queuedTrades[offerID] = itemIDs;
+                logger.info("Обмен #" + offerID + " успешно добавлен в очередь");
+                callback();
+            }
+        });
+    });
+}
+
+/**
+ * Убирает принятые обмены из очереди
+ * @param callback функция обратного вызова
+ */
+function updateQueue(callback) {
+    async.forEachOfSeries(queuedTrades, function (data, key, callbackfunc) {
+        tradeManager.getOffer(key, function (err, offer) {
+            if (err) {
+                logger.error("Не удалось получить обмен #" + key);
+                logger.error(err.stack || err);
+                callbackfunc();
+            } else {
+                if (offer.state !== 2) {
+                    removeTradeFromQueue(key, function () {
+                        callbackfunc();
+                    });
+                } else {
+                    callbackfunc();
+                }
+            }
+        });
+    }, function () {
+        callback();
+    });
+}
+
+/**
+ * Удаляет обмен из очереди
+ * @param offerID идентификатор обмена
+ * @param callback функция обратного вызова
+ */
+function removeTradeFromQueue(offerID, callback) {
+    db.collection("queue").removeOne({offerID: offerID}, {w: 1}, function (err, result) {
+        if (err) {
+            logger.error("Не удалось убрать обмен из очереди");
+            logger.error(err.stack || err);
+            logger.error("Следующая попытка через 1.5с");
+            setTimeout(function () {
+                removeTradeFromQueue(offerID, callback);
+            }, 1500);
+        } else {
+            delete queuedTrades[offerID];
+            logger.info("Обмен #" + offerID + " успешно удален из очереди");
+            callback();
+        }
+    });
+}
+
+/**
+ * Полный список предметов, находящихся в очереди
+ * @returns {Array}
+ */
+function getQueuedItems() {
+    var items = [];
+    Object.keys(queuedTrades).forEach(function (key, index, array) {
+        items = items.concat(queuedTrades[key]);
+    });
+    return items;
+}
+
+/**
  * Обрабатываем обмен
  */
 tradeManager.on('newOffer', function (offer) {
@@ -295,16 +412,20 @@ tradeManager.on('newOffer', function (offer) {
                                                  */
                                                 if (items.length + currentGame.items.length <= globalInfo["max_items"]) {
                                                     if (currentGame)
-                                                    acceptOffer(function () {
-                                                        /**
-                                                         * Обязательно проверяем подтверждения через
-                                                         * мобильный аутентификатор
-                                                         */
-                                                        steamCommunity.checkConfirmations();
-                                                        //socket.emit("event.process_offer.success", {steamid: user.steamID.getSteamID64()});
-                                                        notifyAdmins("Предложение #" + offer.id + " принято", true);
+                                                        acceptOffer(function () {
+                                                            /**
+                                                             * Обязательно проверяем подтверждения через
+                                                             * мобильный аутентификатор
+                                                             */
+                                                            steamCommunity.checkConfirmations();
+                                                            //socket.emit("event.process_offer.success", {steamid: user.steamID.getSteamID64()});
+                                                            notifyAdmins("Предложение #" + offer.id + " принято", true);
 
-                                                    });
+                                                            /**
+                                                             * Добавляем предметы в игру
+                                                             */
+
+                                                        });
                                                 } else {
                                                     declineOffer(offer, "общее кол-во предметов не должно превышать " + globalInfo["max_items"], function () {
                                                         //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items"});
@@ -351,21 +472,26 @@ tradeManager.on('newOffer', function (offer) {
             notifyAdmins("Найдено недействительное предложение об обмене (#" + offer.id + "), игнорирую", true);
         }
     }
-    // console.log(offer);
-    //   console.log("*********************");
-    //   console.log(offer.partner);
-    /* offer.accept(function (err) {
-     if (err) {
-     logger.error("Ошибка во время принятия обмена");
-     logger.error(err.message);
-     } else {
-     steamCommunity.checkConfirmations();
-     logger.info("Обмен принят");
-     notifyAdmins("Обмен принят");
-     }
-     });*/
 });
 
+/**
+ * Обрабатываем изменения в предложениях обмена
+ */
+tradeManager.on('receivedOfferChanged', function (offer, oldState) {
+    if (queuedTrades[offer.id] && (offer.state !== TradeOfferManager.ETradeOfferState.Active || oldState === TradeOfferManager.ETradeOfferState.Active)) {
+        notifyAdmins("Обмен #" + offer.id + " больше не активен");
+        notifyAdmins("Его текущее состояние: " + TradeOfferManager.getStateName(offer.state));
+        removeTradeFromQueue(offer.id, function () {
+        });
+    }
+});
+
+/**
+ * Безопасно принимает обмен (5 попыток)
+ * @param offer предложение обмена
+ * @param callback функция обратного вызова
+ * @param depth номер попытки
+ */
 function acceptOffer(offer, callback, depth) {
     var partnerID = offer.partner.getSteamID64();
     offer.accept(function (err) {
@@ -414,7 +540,7 @@ function processItems(offer, callback) {
     var marketError = false;
     async.forEachOfSeries(items, function (item, key, cb) {
         if (item.appid !== config["appID"]) {
-            appIDMatch = false
+            appIDMatch = false;
         } else {
             var marketInfo = marketHelper.getItemData(item.market_hash_name);
             if (!marketInfo) {
@@ -438,6 +564,12 @@ function processItems(offer, callback) {
     });
 }
 
+/**
+ * Безопасно отклоняет обмен (5 попыток)
+ * @param offer предложение обмена
+ * @param callback функция обратного вызова
+ * @param depth номер попытки
+ */
 function declineOffer(offer, reason, callback, depth) {
     offer.decline(function (err) {
         if (err) {
@@ -460,6 +592,12 @@ function declineOffer(offer, reason, callback, depth) {
     });
 }
 
+/**
+ * Безопасно получает информацию о пользователе (5 попыток)
+ * @param id SteamID64 пользователя
+ * @param callback функция обратного вызова
+ * @param depth номер попытки
+ */
 function getSteamUser(id, callback, depth) {
     steamCommunity.getSteamUser(id, function (err, user) {
         if (err) {
