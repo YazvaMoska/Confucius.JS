@@ -884,6 +884,7 @@ Game.prototype.resume = function (startTime, bank, items, winner, float, hash, s
 
 Game.prototype.saveToDB = function(callback) {
     db.collection("games").insertOne({id: this.id, start_time: -1, bank: this.currentBank, items: this.items, float: this.float, hash: this.hash, state: this.state}, {w: 1}, function(err, result) {
+
         
     });
 }
