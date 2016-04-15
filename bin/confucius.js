@@ -100,9 +100,7 @@ function main() {
         initInfo(function () {
             initQueue(function () {
                 updateQueue(function () {
-                    initGame(function () {
-                        auth();
-                    });
+                    auth();
                 });
             });
 
@@ -172,7 +170,10 @@ function initGame(callback) {
                     callback();
                 });
             } else {
-                //Создаем новую игру
+                currentGame = new Game(globalInfo["current_game"]);
+                currentGame.saveToDB(function () {
+                    callback();
+                });
             }
         }
     });
@@ -245,6 +246,9 @@ steamClient.on('loggedOn', function () {
     steamClient.setPersona(SteamUser.Steam.EPersonaState.LookingToTrade);
     notifyAdmins(moment().format("HH:mm:ss") + " - Авторизирован.", true);
     marketHelper = new MarketHelper();
+    initGame(function () {
+
+    });
 });
 
 /**
@@ -277,7 +281,7 @@ steamClient.on('webSession', function (sessionID, cookies) {
     });
     steamCommunity.setCookies(cookies);
     steamCommunity.chatLogon();
-    steamCommunity.startConfirmationChecker(30000, config["identitySecret"]);
+    steamCommunity.startConfirmationChecker(30000, config["logOnOptions"]["identitySecret"]);
 });
 
 /**
@@ -378,120 +382,128 @@ tradeManager.on('newOffer', function (offer) {
          * Если новый обмен не активен или залагал,
          * пропускаем его
          */
-        if (offer.state === 2 && !offer._isGlitched()) {
-            //socket.emit("event.process_offer", {steamid: offer.partner.getSteamID64()});
-            getSteamUser(offer.partner.getSteamID64(), function (user) {
-                notifyAdmins("Получено предложение об обмене #" + offer.id + " от " + user.name, true);
-                /**
-                 * Удостоверимся, что пользователь только вносит предметы
-                 */
-                if (offer.itemsToGive.length <= 0) {
-                    /**
-                     * Проверим, не скрыт ли профиль
-                     */
-                    if (user.privacyState === "public") {
+        getToken(offer.partner.getSteamID64(), function (token) {
+            if (token) {
+                if (offer.state === 2 && !offer._isGlitched()) {
+                    //socket.emit("event.process_offer", {steamid: offer.partner.getSteamID64()});
+                    getSteamUser(offer.partner.getSteamID64(), function (user) {
+                        notifyAdmins("Получено предложение об обмене #" + offer.id + " от " + user.name, true);
                         /**
-                         * Проверяем, привязал ли пользователь мобильный телефон
-                         * (чтобы обмен не завис на три дня)
+                         * Удостоверимся, что пользователь только вносит предметы
                          */
-                        if (offer.confirmationMethod === 2) {
+                        if (offer.itemsToGive.length <= 0) {
                             /**
-                             * Обрабатываем предметы
-                             * @see {#processItems}
+                             * Проверим, не скрыт ли профиль
                              */
-                            processItems(offer, function (items, totalCost, appIDMatch, marketError) {
+                            if (user.privacyState === "public") {
+
                                 /**
-                                 * Удостоверимся, что все предметы из нужной игры
+                                 * Обрабатываем предметы
+                                 * @see {#processItems}
                                  */
-                                if (appIDMatch) {
+                                processItems(offer, function (items, totalCost, appIDMatch, marketError) {
                                     /**
-                                     * Проверяем наличие других ошибок
-                                     * @see {#processItems}
+                                     * Удостоверимся, что все предметы из нужной игры
                                      */
-                                    if (!marketError) {
+                                    if (appIDMatch) {
                                         /**
-                                         * Превосходит ли стоимость предметов минимальную ставку
+                                         * Проверяем наличие других ошибок
+                                         * @see {#processItems}
                                          */
-                                        if (totalCost >= Number(globalInfo["min_bet"]) * 100) {
+                                        if (!marketError) {
                                             /**
-                                             * Удостоверимся, что число предметов за один обмен
-                                             * не превосходит максимальное разрешенное
+                                             * Превосходит ли стоимость предметов минимальную ставку
                                              */
-                                            if (items.length <= globalInfo["max_items_per_trade"]) {
+                                            if (totalCost >= Number(globalInfo["min_bet"]) * 100) {
                                                 /**
-                                                 * Проверяем, не станет ли общее число предметов в игре
-                                                 * больше максимального
+                                                 * Удостоверимся, что число предметов за один обмен
+                                                 * не превосходит максимальное разрешенное
                                                  */
-                                                if (items.length + currentGame.items.length <= globalInfo["max_items"]) {
+                                                if (items.length <= globalInfo["max_items_per_trade"]) {
                                                     /**
-                                                     * Проверим, не превышает кол-во предметов от данного пользователя
-                                                     * максимальное разрешенное
+                                                     * Проверяем, не станет ли общее число предметов в игре
+                                                     * больше максимального
                                                      */
-                                                    if (currentGame.activeBetters[user.steamID.getSteamID64()].count + items.length <= globalInfo["max_items_per_user"]) {
-                                                        acceptOffer(function () {
-                                                            /**
-                                                             * Обязательно проверяем подтверждения через
-                                                             * мобильный аутентификатор
-                                                             */
-                                                            steamCommunity.checkConfirmations();
-                                                            //socket.emit("event.process_offer.success", {steamid: user.steamID.getSteamID64()});
-                                                            notifyAdmins("Предложение #" + offer.id + " принято", true);
+                                                    if (items.length + currentGame.items.length <= globalInfo["max_items"]) {
+                                                        /**
+                                                         * Проверим, не превышает кол-во предметов от данного пользователя
+                                                         * максимальное разрешенное
+                                                         */
+                                                        if (!currentGame.activeBetters || currentGame.activeBetters[user.steamID.getSteamID64()].count + items.length <= globalInfo["max_items_per_user"]) {
+                                                            acceptOffer(offer, function () {
+                                                                /**
+                                                                 * Обязательно проверяем подтверждения через
+                                                                 * мобильный аутентификатор
+                                                                 */
+                                                                steamCommunity.checkConfirmations();
+                                                                //socket.emit("event.process_offer.success", {steamid: user.steamID.getSteamID64()});
+                                                                notifyAdmins("Предложение #" + offer.id + " принято", true);
 
-                                                            /**
-                                                             * Добавляем предметы в игру
-                                                             */
+                                                                /**
+                                                                 * Добавляем предметы в игру
+                                                                 */
 
-                                                        });
+                                                                addItemsToGame(items, totalCost, function () {
+                                                                    currentGame.updateGame(function () {
+                                                                        if (currentGame.state !== "waiting") {
+                                                                            notifyAdmins("Таймер пошел");
+                                                                        }
+                                                                    });
+                                                                });
+
+                                                            });
+                                                        } else {
+                                                            declineOffer(offer, "кол-во предметов от одного пользователя не должно превышать " + globalInfo["max_items_per_user"], function () {
+                                                                //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items_from_user"});
+                                                            });
+                                                        }
                                                     } else {
-                                                        declineOffer(offer, "кол-во предметов от одного пользователя не должно превышать " + globalInfo["max_items_per_user"], function () {
-                                                            //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items_from_user"});
+                                                        declineOffer(offer, "общее кол-во предметов не должно превышать " + globalInfo["max_items"], function () {
+                                                            //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items"});
                                                         });
                                                     }
                                                 } else {
-                                                    declineOffer(offer, "общее кол-во предметов не должно превышать " + globalInfo["max_items"], function () {
-                                                        //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items"});
+                                                    declineOffer(offer, "обмен содержит больше " + globalInfo["max_items_per_trade"] + "предметов", function () {
+                                                        //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items_in_trade"});
                                                     });
                                                 }
                                             } else {
-                                                declineOffer(offer, "обмен содержит больше " + globalInfo["max_items_per_trade"] + "предметов", function () {
-                                                    //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "too_many_items_in_trade"});
+                                                declineOffer(offer, "ставка меньше минимальной", function () {
+                                                    //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "low_bet"});
                                                 });
                                             }
                                         } else {
-                                            declineOffer(offer, "ставка меньше минимальной", function () {
-                                                //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "low_bet"});
+                                            declineOffer(offer, marketError.message, function () {
+                                                //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: marketError.reason});
                                             });
                                         }
                                     } else {
-                                        declineOffer(offer, marketError.message, function () {
-                                            //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: marketError.reason});
+                                        declineOffer(offer, "обмен содержит предметы из других игр", function () {
+                                            //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "items_to_give"});
                                         });
                                     }
-                                } else {
-                                    declineOffer(offer, "обмен содержит предметы из других игр", function () {
-                                        //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "items_to_give"});
-                                    });
-                                }
-                            });
+                                });
+
+                            } else {
+                                declineOffer(offer, "профиль пользователя скрыт", function () {
+                                    //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "private_profile"});
+                                });
+                            }
                         } else {
-                            declineOffer(offer, "профиль пользователя не привязан к мобильному аутентификатору Steam Guard", function () {
-                                //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "no_mobile_auth"});
+                            declineOffer(offer, "попытка вывести предметы", function () {
+                                //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "items_to_give"});
                             });
                         }
-                    } else {
-                        declineOffer(offer, "профиль пользователя скрыт", function () {
-                            //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "private_profile"});
-                        });
-                    }
-                } else {
-                    declineOffer(offer, "попытка вывести предметы", function () {
-                        //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "items_to_give"});
                     });
+                } else {
+                    notifyAdmins("Найдено недействительное предложение об обмене (#" + offer.id + "), игнорирую", true);
                 }
-            });
-        } else {
-            notifyAdmins("Найдено недействительное предложение об обмене (#" + offer.id + "), игнорирую", true);
-        }
+            } else {
+                declineOffer(offer, "у пользователя отсутствует трейд-ссылка", function () {
+                    //socket.emit("event.process_offer.fail", {steamid: user.steamID.getSteamID64(), reason: "no_trade_link"});
+                });
+            }
+        });
     }
 });
 
@@ -542,20 +554,20 @@ function acceptOffer(offer, callback, depth) {
 function addItemsToGame(items, totalCost, callback) {
     var bank = currentGame.currentBank;
     async.forEachOfSeries(items, function (item, key, cb) {
-        addItemToDB({
-                id: item.id,
-                name: item.name,
-                owner: item.owner,
-                cost: (item.cost / 100).toFixed(2),
-                image: item.getImageURL(),
-                cost_from: bank + 1,
-                cost_to: bank + item.cost,
-            },
+        var newItem = {
+            id: item.id,
+            name: item.name,
+            owner: item.owner,
+            market_hash_name: item.market_hash_name,
+            cost: (item.cost / 100).toFixed(2),
+            image: item.getImageURL(),
+            cost_from: bank + 1,
+            cost_to: bank + item.cost,
+        };
+        addItemToDB(newItem,
             function () {
-                item.cost_from = bank + 1;
-                item.cost_to = bank + item.cost,
-                    bank += item.cost;
-                currentGame.items.push(item);
+                bank += item.cost;
+                currentGame.items.push(newItem);
                 cb();
             });
     }, function () {
@@ -660,7 +672,7 @@ function declineOffer(offer, reason, callback, depth) {
  * @param depth номер попытки
  */
 function getSteamUser(id, callback, depth) {
-    steamCommunity.getSteamUser(id, function (err, user) {
+    steamCommunity.getSteamUser(new SteamCommunityContainer.SteamID(id), function (err, user) {
         if (err) {
             logger.error("Ошибка при получении данных пользователя " + id);
             logger.error(err.stack || err);
@@ -773,52 +785,61 @@ function Game(id) {
     this.currentBank = 0;
     this.items = [];
     this.float = Math.random();
-    this.hash = crypto.createHash('md5').update(this.float).digest('hex');
+    this.hash = crypto.createHash('md5').update(this.float + "").digest('hex');
     this.timerID = -1;
-    this.status = "waiting";
+    this.state = "waiting";
     this.activeBetters = {};
 }
 
 Game.prototype.sortBetsByPlayer = function (items, callback) {
+    var _this = this;
     var sortedItems = {};
-    async.forEachOfSeries(items, function (item, index, callback) {
+    async.forEachOfSeries(items, function (item, index, cb) {
         if (sortedItems[item.owner]) {
             var data = marketHelper.getItemData(item.market_hash_name);
             sortedItems[item.owner].total_cost += data.value;
             sortedItems[item.owner].count++;
         } else {
+            logger.info(item.market_hash_name);
             sortedItems[item.owner] = {total_cost: 0, count: 0, chance: 0};
+            var data = marketHelper.getItemData(item.market_hash_name);
+            sortedItems[item.owner].total_cost += data.value;
+            sortedItems[item.owner].count++;
         }
-        callback();
+        cb();
+
     }, function () {
-        this.activeBetters = sortedItems;
-        this.recalculateChance(function () {
+        _this.activeBetters = sortedItems;
+        _this.recalculateChance(function () {
             callback();
         });
     });
 }
 
 Game.prototype.recalculateChance = function (callback) {
-    async.forEachOfSeries(this.activeBetters, function (data, key, cb) {
-        this.activeBetters[key].chance = (data.total_cost / this.currentBank * 100).toFixed(2);
+    var _this = this;
+    async.forEachOfSeries(_this.activeBetters, function (data, key, cb) {
+        _this.activeBetters[key].chance = (data.total_cost / _this.currentBank * 100).toFixed(2);
     }, function () {
         callback();
     });
 }
 
 Game.prototype.updateGame = function (callback) {
-    db.collection("games").updateOne({id: this.id}, {$set: {bank: this.currentBank}}, {w: 1}, function (err, result) {
+    var _this = this;
+    db.collection("games").updateOne({id: _this.id}, {$set: {bank: _this.currentBank}}, {w: 1}, function (err, result) {
         if (err) {
             logger.error("Не удалось обновить информацию об игре");
             setTimeout(function () {
                 self.updateGame(callback);
             }, 100);
         } else {
-            this.activeBetters = this.sortBetsByPlayer(this.items, function () {
-                this.recalculateChance(function () {
-                    if (this.state === "waiting" && Object.keys(this.activeBetters).length >= 2) {
+            _this.activeBetters = _this.sortBetsByPlayer(_this.items, function () {
+                _this.recalculateChance(function () {
+                    logger.info(_this.state + " " + this.activeBetters);
+                    if (_this.state === "waiting" && Object.keys(_this.activeBetters).length >= 2) {
                         var start = Date.now();
-                        db.collection("games").updateOne({id: this.id}, {$set: {start_time: start}}, {w: 1}, function (err1, result) {
+                        db.collection("games").updateOne({id: _this.id}, {$set: {start_time: start}}, {w: 1}, function (err1, result) {
                             if (err1) {
                                 logger.error("Не удалось обновить информацию об игре");
                                 setTimeout(function () {
@@ -826,13 +847,15 @@ Game.prototype.updateGame = function (callback) {
                                 }, 100);
                             } else {
                                 globalInfo.start_time = start;
-                                this.gameTimer = Number(config["gameDuration"]);
-                                this.start();
+                                _this.gameTimer = Number(config["gameDuration"]);
+                                _this.start();
                                 callback();
                             }
                         });
-                    } else if (this.items.length === globalInfo["max_items"]) {
-                        //proceed winners
+                    } else if (_this.items.length === globalInfo["max_items"]) {
+                        _this.roll(function () {
+
+                        });
                     } else {
                         callback();
                     }
@@ -843,18 +866,19 @@ Game.prototype.updateGame = function (callback) {
 }
 
 Game.prototype.setState = function (newState, callback) {
-    if (this.state !== newState) {
-        db.collection("games").updateOne({id: this.id}, {$set: {state: newState}}, {w: 1}, function (err, result) {
+    var _this = this;
+    if (_this.state !== newState) {
+        db.collection("games").updateOne({id: _this.id}, {$set: {state: newState}}, {w: 1}, function (err, result) {
             if (err) {
-                logger.error("Не удалось обновить статус игры #" + this.id);
+                logger.error("Не удалось обновить статус игры #" + _this.id);
                 logger.error(err.stack || err);
                 logger.error("Пытаюсь снова");
                 setTimeout(function () {
                     self.setState(newState, callback);
                 }, 500);
             } else {
-                logger.info("Статус игры #" + this.id + " изменен с '" + this.state + "' на '" + newState + "'");
-                this.state = newState;
+                logger.info("Статус игры #" + _this.id + " изменен с '" + _this.state + "' на '" + newState + "'");
+                _this.state = newState;
                 callback();
             }
         });
@@ -874,64 +898,62 @@ Game.prototype.setState = function (newState, callback) {
  * @param hash хэш раунда
  */
 Game.prototype.resume = function (startTime, bank, items, winner, float, hash, state) {
-    this.state = state;
+    var _this = this;
+    _this.state = state;
     if (winner) {
         if (state !== "sent") {
             //отправить выигрыш
         } else {
-            currentGame = new Game(this.id + 1);
-            currentGame.saveToDB(function(){});
-        }
-    } else {
-        this.currentBank = bank;
-        this.items = items;
-        this.float = float;
-        this.hash = hash;
-        this.activeBetters = this.sortBetsByPlayer(this.items);
-        if (startTime > 0) {
-            if (Date.now() - startTime >= Number(config["gameDuration"]) * 1000) {
-                //proceed winners
-            } else {
-                this.gameTimer = Math.max(1, Number(((Date.now() - startTime) / 1000).toFixed(0)));
-                this.start();
-            }
-        } else if (Object.keys(this.activeBetters).length >= 2) {
-            var start = Date.now();
-            db.collection("games").updateOne({id: this.id}, {$set: {start_time: start}}, {w: 1}, function (err, result) {
-                if (err) {
-                    logger.error(err.stack || err);
-                    terminate();
-                } else {
-                    globalInfo.start_time = start;
-                    this.gameTimer = Number(config["gameDuration"]);
-                    this.start();
-                }
+            currentGame = new Game(_this.id + 1);
+            currentGame.saveToDB(function () {
             });
         }
+    } else {
+        _this.currentBank = bank;
+        _this.items = items;
+        _this.float = float;
+        _this.hash = hash;
+        _this.sortBetsByPlayer(_this.items, function () {
+            if (startTime > 0) {
+                if (Date.now() - startTime >= Number(config["gameDuration"]) * 1000) {
+                    _this.roll(function () {
+
+                    });
+                } else {
+                    _this.gameTimer = Math.max(1, Number(((Date.now() - startTime) / 1000).toFixed(0)));
+                    _this.start();
+                }
+            } else if (Object.keys(_this.activeBetters).length >= 2) {
+                var start = Date.now();
+                _this.updateGame(function (){});
+            }
+        });
+
     }
 }
 
 Game.prototype.saveToDB = function (callback) {
-    db.collection("info").updateOne({name: "current_game"}, {$set: {value: this.id}}, {w: 1}, function(error, result){
+    var _this = this;
+    db.collection("info").updateOne({name: "current_game"}, {$set: {value: _this.id}}, {w: 1}, function (error, result) {
         if (error) {
             logger.error(error.stack || error);
-            setTimeout(function() {
+            setTimeout(function () {
                 self.saveToDB(callback);
             }, 1500);
         } else {
             db.collection("games").insertOne({
-                id: this.id,
+                id: _this.id,
                 start_time: -1,
-                bank: this.currentBank,
-                items: this.items,
-                float: this.float,
-                hash: this.hash,
-                state: this.state
+                bank: _this.currentBank,
+                items: _this.items,
+                float: _this.float,
+                hash: _this.hash,
+                state: _this.state
             }, {w: 1}, function (err, result) {
                 if (err) {
                     logger.error(err.stack || err);
-                    setTimeout(function() {
-                        self.saveToDB(callback);
+                    setTimeout(function () {
+                        _this.saveToDB(callback);
                     }, 1500);
                 } else {
                     callback();
@@ -946,40 +968,194 @@ Game.prototype.saveToDB = function (callback) {
  * Запускаем отсчет до конца игры
  */
 Game.prototype.start = function () {
-    this.setState("active", function () {
-        this.timerID = setInterval(function () {
-            this.gameTimer--;
-            //socket.emit("event.main_timer", this.gameTimer);
-            if (this.gameTimer <= 0) {
-                clearInterval(this.timerID);
-                this.roll(function(){});
+    var _this = this;
+    _this.setState("active", function () {
+        _this.timerID = setInterval(function () {
+            _this.gameTimer--;
+            //socket.emit("event.main_timer", _this.gameTimer);
+            if (_this.gameTimer <= 0) {
+                clearInterval(_this.timerID);
+                _this.roll(function () {
+                });
             }
         }, 1000);
     });
 }
 
 Game.prototype.selectWinner = function () {
-    var winnerNumber = Math.max((this.currentBank * this.float).toFixed(2) * 100, 1);
-    this.items.forEach(function (item, index, array) {
+    var _this = this;
+    var winnerNumber = Math.max((_this.currentBank * _this.float).toFixed(2) * 100, 1);
+    _this.items.forEach(function (item, index, array) {
         if (winnerNumber >= item.cost_from && winnerNumber <= item.cost_to) {
             return item.owner;
         }
     });
 }
 
-Game.prototype.roll = function(callback) {
+Game.prototype.roll = function (callback) {
     ROLLING = true;
-    var winnerID = this.selectWinner();
-    var newGame = new Game(this.id + 1);
+    var _this = this;
+    var winnerID = _this.selectWinner();
+    var newGame = new Game(_this.id + 1);
+    newGame.saveToDB(function () {
+    });
     currentGame = newGame;
-    getSteamUser(winnerID, function(user) {
+    getSteamUser(winnerID, function (user) {
         //socket.emit("event.roll", {winnerID, user.name, user.getAvatarURL()});
-        setTimeout(function() {
-
+        setTimeout(function () {
+            var time = Date.now();
+            loadInventory(function (items) {
+                var itemsToSend = [];
+                var gameItems = _this.items;
+                var feeSize = (_this.currentBank * Number(globalInfo["fee"]) / 100).toFixed(0);
+                gameItems.sort(function (a, b) {
+                    return (a.cost > b.cost) ? 1 : ((b.cost > a.cost) ? -1 : 0);
+                });
+                async.forEachOfSeries(gameItems, function (item, key, cb) {
+                    var inventoryItem = items.filter(function (o) {
+                        return o.id == item.id;
+                    });
+                    if (inventoryItem && inventoryItem[0]) {
+                        inventoryItem = inventoryItem[0];
+                        if (item.cost <= feeSize && item.owner !== winnerID) {
+                            feeSize -= item.cost;
+                            gameItems.splice(gameItems.indexOf(item, 1));
+                        } else {
+                            itemsToSend.push(inventoryItem);
+                        }
+                        cb();
+                    } else {
+                        cb();
+                    }
+                }, function () {
+                    sendItems(winnerID, itemsToSend, "Ваш выигрыш на сайте DOTA2BETS.RU в игре №" + _this.id, function (offer) {
+                        steamCommunity.checkConfirmations();
+                        sendTradeToQueue(offer.id, itemsToSend, function () {
+                            _this.submitWinner(user, (_this.activeBetters[winnerID].total_cost / _this.currentBank).toFixed(2), function () {
+                                _this.finish(winnerID, function () {
+                                    _this.setState("sent", function () {
+                                        ROLLING = false;
+                                        var waitTimer = Date.now() - time;
+                                        if (waitTimer > 0) {
+                                            setTimeout(function () {
+                                                //socket.emit("event.update");
+                                            }, waitTimer);
+                                        } else {
+                                            //socket.emit("event.update");
+                                        }
+                                        callback();
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
         }, config["rouletteDuration"]);
     });
 }
 
+Game.prototype.submitWinner = function (winner, percentage, callback) {
+    var _this = this;
+    db.collection("games").updateOne({id: _this.id}, {
+        $set: {
+            winner: winner.steamID.getSteamID64(),
+            winner_name: winner.name,
+            percentage: percentage,
+            winner_avatar: winner.getAvatarURL()
+        }
+    }, {w: 1}, function (err, res) {
+        if (err) {
+            logger.error(err.stack || err);
+            setTimeout(function () {
+                self.submitWinner(winner, percentage, callback);
+            }, 1500);
+        } else {
+            callback();
+        }
+    });
+}
+
+Game.prototype.finish = function (winner, callback) {
+    var _this = this;
+    db.collection("users").find({steamid: winner}).toArray(function (err, users) {
+        if (err) {
+            logger.error(err.stack || err);
+            setTimeout(function () {
+                self.finish(winner, callback);
+            }, 1500);
+        } else {
+            db.collection("users").updateOne({steamid: winner}, {
+                $set: {
+                    won: users[0].won + 1,
+                    total_income: users[0].total_income + _this.currentBank,
+                    max_win: users[0].max_win < _this.currentBank ? _this.currentBank : users[0].max_win
+                }
+            }, {w: 1}, function (err1, r) {
+                if (err1) {
+                    logger.error(err1.stack || err1);
+                    setTimeout(function () {
+                        _this.finish(winner, callback);
+                    }, 1500);
+                } else {
+                    callback();
+                }
+            });
+        }
+    });
+}
+
+function sendItems(user, items, msg, callback) {
+    var _this = this;
+    var offer = tradeManager.createOffer(user);
+    offer.addMyItems(items);
+    getToken(user, function (token) {
+        offer.send(msg, token, function (err, result) {
+            if (!err) {
+                callback(offer);
+            } else {
+                logger.error("Не удалосm отправить трейд");
+                logger.error(err.stack || err);
+                setTimeout(function () {
+                    sendItems(user, items, callback);
+                }, 3000);
+            }
+        });
+    });
+}
+
+function loadInventory(callback) {
+    tradeManager.loadInventory(config["appID"], 2, true, function (err, items) {
+        if (err) {
+            logger.error("Не удалось загрузить инвентарь");
+            logger.error(err.stack || err);
+            setTimeout(function () {
+                loadInventory(callback);
+            }, 1500);
+        } else {
+            callback(items);
+        }
+    });
+}
+
+function getToken(steamid, callback) {
+    db.collection("users").find({steamid: steamid}).toArray(function (err, users) {
+        if (err) {
+            logger.error(err.stack || err);
+            setTimeout(function () {
+                getToken(steamid, callback);
+            }, 1500);
+        } else {
+            if (!users) {
+                callback(null);
+            } else if (!users[0].token) {
+                callback(null);
+            } else {
+                callback(users[0].token);
+            }
+        }
+    });
+}
 
 /**
  * Выполняет соответствующую команду
@@ -1091,6 +1267,16 @@ function executeCommand(command, args, sender) {
             }
             break;
         }
+        case "sendall":
+        {
+            loadInventory(function(items) {
+               sendItems(sender, items, "Лови", function() {
+                   steamCommunity.checkConfirmations();
+                   steamClient.chatMessage(sender, "Трейд отправлен!");
+               });
+            });
+            break;
+        }
         case "help":
         {
             steamClient.chatMessage(sender, "Помощь тут");
@@ -1109,14 +1295,15 @@ function executeCommand(command, args, sender) {
  * @constructor
  */
 function MarketHelper() {
-    this.taskID = -1;
-    this.priceData = {};
+    var _this = this;
+    _this.taskID = -1;
+    _this.priceData = {};
     if (!config["lastPriceUpdate"] || Date.now() - config["lastPriceUpdate"] >= Number(config["priceUpdateInterval"]) * 1000) {
-        this.cachePrices();
+        _this.cachePrices();
     } else {
-        this.priceData = JSON.parse(fs.readFileSync("./prices.json", "utf-8"));
-        this.taskID = setTimeout(function () {
-            this.cachePrices();
+        _this.priceData = JSON.parse(fs.readFileSync("./prices.json", "utf-8"));
+        _this.taskID = setTimeout(function () {
+            _this.cachePrices();
         }, (Number(config["priceUpdateInterval"]) * 1000) - (Date.now() - Number(config["lastPriceUpdate"])));
     }
 }
@@ -1138,6 +1325,7 @@ MarketHelper.prototype.getItemData = function (marketHashName) {
  * в файл prices.json с помощью API backpack.tf
  */
 MarketHelper.prototype.cachePrices = function () {
+    var _this = this;
     logger.info("Идет кэширование цен, может занять до 1 минуты");
     var url = "http://backpack.tf/api/IGetMarketPrices/v1/?format=json&appid=" + config["appID"] + "&key=" + config["bptfAPIKey"];
     request(url, function (err, response, body) {
@@ -1151,12 +1339,12 @@ MarketHelper.prototype.cachePrices = function () {
         } else {
             var data = JSON.parse(body);
             if (Number(data.response.success) == 1) {
-                this.priceData = data.response.items;
-                fs.writeFileSync("./prices.json", JSON.stringify(this.priceData, null, 3), "utf-8");
+                _this.priceData = data.response.items;
+                fs.writeFileSync("./prices.json", JSON.stringify(_this.priceData, null, 3), "utf-8");
                 logger.info("Цены успешно прокэшированы");
                 config["lastPriceUpdate"] = Date.now();
                 fs.writeFileSync("./config.json", JSON.stringify(config, null, 3), "utf-8");
-                this.taskID = setTimeout(function () {
+                _this.taskID = setTimeout(function () {
                     self.cachePrices();
                 }, Number(config["priceUpdateInterval"]) * 1000);
             } else {
