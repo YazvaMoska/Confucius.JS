@@ -31,6 +31,12 @@ var db;
 var LOGGED_IN = false;
 
 /**
+ * Крутится ли рулетка
+ * @type {boolean}
+ */
+var ROLLING = false;
+
+/**
  * Выводит все необходимое в консоль и в файл
  */
 var logger = createLogger();
@@ -810,7 +816,26 @@ Game.prototype.updateGame = function (callback) {
         } else {
             this.activeBetters = this.sortBetsByPlayer(this.items, function () {
                 this.recalculateChance(function () {
-                    callback();
+                    if (this.state === "waiting" && Object.keys(this.activeBetters).length >= 2) {
+                        var start = Date.now();
+                        db.collection("games").updateOne({id: this.id}, {$set: {start_time: start}}, {w: 1}, function (err1, result) {
+                            if (err1) {
+                                logger.error("Не удалось обновить информацию об игре");
+                                setTimeout(function () {
+                                    self.updateGame(callback);
+                                }, 100);
+                            } else {
+                                globalInfo.start_time = start;
+                                this.gameTimer = Number(config["gameDuration"]);
+                                this.start();
+                                callback();
+                            }
+                        });
+                    } else if (this.items.length === globalInfo["max_items"]) {
+                        //proceed winners
+                    } else {
+                        callback();
+                    }
                 })
             });
         }
@@ -818,20 +843,24 @@ Game.prototype.updateGame = function (callback) {
 }
 
 Game.prototype.setState = function (newState, callback) {
-    db.collection("games").updateOne({id: this.id}, {$set: {state: newState}}, {w: 1}, function (err, result) {
-        if (err) {
-            logger.error("Не удалось обновить статус игры #" + this.id);
-            logger.error(err.stack || err);
-            logger.error("Пытаюсь снова");
-            setTimeout(function () {
-                self.setState(newState, callback);
-            }, 500);
-        } else {
-            logger.info("Статус игры #" + this.id + " изменен с '" + this.state + "' на '" + newState + "'");
-            this.state = newState;
-            callback();
-        }
-    });
+    if (this.state !== newState) {
+        db.collection("games").updateOne({id: this.id}, {$set: {state: newState}}, {w: 1}, function (err, result) {
+            if (err) {
+                logger.error("Не удалось обновить статус игры #" + this.id);
+                logger.error(err.stack || err);
+                logger.error("Пытаюсь снова");
+                setTimeout(function () {
+                    self.setState(newState, callback);
+                }, 500);
+            } else {
+                logger.info("Статус игры #" + this.id + " изменен с '" + this.state + "' на '" + newState + "'");
+                this.state = newState;
+                callback();
+            }
+        });
+    } else {
+        callback();
+    }
 }
 
 /**
@@ -850,9 +879,9 @@ Game.prototype.resume = function (startTime, bank, items, winner, float, hash, s
         if (state !== "sent") {
             //отправить выигрыш
         } else {
-            currentGame + new Game(this.id + 1);
+            currentGame = new Game(this.id + 1);
+            currentGame.saveToDB(function(){});
         }
-
     } else {
         this.currentBank = bank;
         this.items = items;
@@ -882,33 +911,72 @@ Game.prototype.resume = function (startTime, bank, items, winner, float, hash, s
     }
 }
 
-Game.prototype.saveToDB = function(callback) {
-    db.collection("games").insertOne({id: this.id, start_time: -1, bank: this.currentBank, items: this.items, float: this.float, hash: this.hash, state: this.state}, {w: 1}, function(err, result) {
-
-        
+Game.prototype.saveToDB = function (callback) {
+    db.collection("info").updateOne({name: "current_game"}, {$set: {value: this.id}}, {w: 1}, function(error, result){
+        if (error) {
+            logger.error(error.stack || error);
+            setTimeout(function() {
+                self.saveToDB(callback);
+            }, 1500);
+        } else {
+            db.collection("games").insertOne({
+                id: this.id,
+                start_time: -1,
+                bank: this.currentBank,
+                items: this.items,
+                float: this.float,
+                hash: this.hash,
+                state: this.state
+            }, {w: 1}, function (err, result) {
+                if (err) {
+                    logger.error(err.stack || err);
+                    setTimeout(function() {
+                        self.saveToDB(callback);
+                    }, 1500);
+                } else {
+                    callback();
+                }
+            });
+        }
     });
+
 }
 
 /**
  * Запускаем отсчет до конца игры
  */
 Game.prototype.start = function () {
-    this.state = "active";
-    this.timerID = setInterval(function () {
-        this.gameTimer--;
-        //socket.emit("event.main_timer", this.gameTimer);
-        if (this.gameTimer <= 0) {
-            clearInterval(this.timerID);
-        }
-    }, 1000);
+    this.setState("active", function () {
+        this.timerID = setInterval(function () {
+            this.gameTimer--;
+            //socket.emit("event.main_timer", this.gameTimer);
+            if (this.gameTimer <= 0) {
+                clearInterval(this.timerID);
+                this.roll(function(){});
+            }
+        }, 1000);
+    });
 }
 
 Game.prototype.selectWinner = function () {
-    var winnerNumber = (this.currentBank * this.float).toFixed(2) * 100;
+    var winnerNumber = Math.max((this.currentBank * this.float).toFixed(2) * 100, 1);
     this.items.forEach(function (item, index, array) {
-        if (winnerNumber > item.from && winnerNumber < item.to) {
-
+        if (winnerNumber >= item.cost_from && winnerNumber <= item.cost_to) {
+            return item.owner;
         }
+    });
+}
+
+Game.prototype.roll = function(callback) {
+    ROLLING = true;
+    var winnerID = this.selectWinner();
+    var newGame = new Game(this.id + 1);
+    currentGame = newGame;
+    getSteamUser(winnerID, function(user) {
+        //socket.emit("event.roll", {winnerID, user.name, user.getAvatarURL()});
+        setTimeout(function() {
+
+        }, config["rouletteDuration"]);
     });
 }
 
