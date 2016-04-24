@@ -177,6 +177,7 @@ function initGame(callback) {
     });
 }
 
+
 /**
  * Авторизируемся через Steam
  */
